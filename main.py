@@ -1,129 +1,202 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 import os
 import requests
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+)
+import pytz
 
 # ====== ENV LOAD ======
 load_dotenv()
-BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
-OWM_KEY = os.getenv("OPENWEATHER_API_KEY")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
-if not BOT_TOKEN or not OWM_KEY:
-    raise SystemExit("⚠️ Iltimos, .env faylga TELEGRAM_TOKEN va OPENWEATHER_API_KEY qo‘shing.")
+if not TELEGRAM_TOKEN:
+    print("⚠️ Iltimos, .env faylga TELEGRAM_TOKEN qo‘shing.")
+    exit()
 
 # ====== API URL ======
-GEOCODE_URL = "https://api.openweathermap.org/geo/1.0/direct"
-CURRENT_URL = "https://api.openweathermap.org/data/2.5/weather"
-FORECAST_HOURLY_URL = "https://pro.openweathermap.org/data/2.5/forecast/hourly"
+GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
+FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+
+# ====== EMOJI FUNKSIYA ======
+def weather_emoji(code):
+    if code in [0, 1]:
+        return "☀️"
+    elif code in [2, 3]:
+        return "⛅️"
+    elif code in [45, 48]:
+        return "🌫"
+    elif code in [51, 53, 55, 61, 63, 65, 80, 81, 82]:
+        return "🌧"
+    elif code in [71, 73, 75, 85, 86]:
+        return "❄️"
+    elif code in [95, 96, 99]:
+        return "⛈"
+    else:
+        return "🌤"
 
 # ====== FUNKSIYALAR ======
-
 def get_coordinates(city: str):
-    """Shahar nomidan lat/lon olish"""
-    params = {"q": city, "limit": 1, "appid": OWM_KEY}
+    params = {"name": city, "count": 1, "language": "en", "format": "json"}
     r = requests.get(GEOCODE_URL, params=params, timeout=10)
-    if r.status_code != 200 or not r.json():
-        raise ValueError("Shahar topilmadi.")
-    data = r.json()[0]
-    return data["lat"], data["lon"], data["name"]
+    if r.status_code != 200 or not r.json().get("results"):
+        raise ValueError("City not found.")
+    data = r.json()["results"][0]
+    return data["latitude"], data["longitude"], data["name"]
 
-def get_current_weather(lat, lon):
-    params = {"lat": lat, "lon": lon, "appid": OWM_KEY, "units": "metric", "lang": "uz"}
-    r = requests.get(CURRENT_URL, params=params, timeout=10)
-    r.raise_for_status()
-    return r.json()
-
-def get_hourly_forecast(lat, lon):
-    params = {"lat": lat, "lon": lon, "appid": OWM_KEY, "units": "metric", "lang": "uz"}
-    r = requests.get(FORECAST_HOURLY_URL, params=params, timeout=10)
-    r.raise_for_status()
-    return r.json()
-
-def summarize_daily(hourly_data, tz_offset, target_date):
-    """Berilgan sana uchun min, max, o‘rtacha harorat va ob-havo matni"""
-    temps = []
-    desc = []
-    for item in hourly_data.get("list", []):
-        local_dt = datetime.fromtimestamp(item["dt"], timezone.utc) + timedelta(seconds=tz_offset)
-        if local_dt.date() == target_date:
-            temps.append(item["main"]["temp"])
-            desc.append(item["weather"][0]["description"])
-    if not temps:
-        return None
-    from collections import Counter
-    return {
-        "min": min(temps),
-        "max": max(temps),
-        "avg": sum(temps) / len(temps),
-        "desc": Counter(desc).most_common(1)[0][0]
+def get_weather_data(lat, lon):
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "daily": "temperature_2m_min,temperature_2m_max,weathercode",
+        "current_weather": True,
+        "timezone": "auto",
     }
+    r = requests.get(FORECAST_URL, params=params, timeout=10)
+    r.raise_for_status()
+    return r.json()
 
-def format_weather(city, current, today, tomorrow):
+# ====== KO‘P TILLI SO‘ZLAR ======
+LANG = {
+    "uz": {
+        "choose_lang": "🌐 Tilni tanlang:",
+        "menu": "🇺🇿 O‘zbekiston yoki 🌍 Boshqa davlatlardan birini tanlang:",
+        "uz_regions": "🇺🇿 Qaysi viloyatni tanlaysiz?",
+        "world_countries": "🌍 Qaysi davlatni tanlaysiz?",
+        "again": "🔁 Yana qaysi joyni ob-havosini ko‘rmoqchisiz?",
+        "source": "Manba: Open-Meteo (open-meteo.com)",
+    },
+    "ru": {
+        "choose_lang": "🌐 Выберите язык:",
+        "menu": "🇺🇿 Узбекистан или 🌍 Другие страны:",
+        "uz_regions": "🇺🇿 Выберите область:",
+        "world_countries": "🌍 Выберите страну:",
+        "again": "🔁 Хотите посмотреть другой город?",
+        "source": "Источник: Open-Meteo",
+    },
+    "en": {
+        "choose_lang": "🌐 Choose your language:",
+        "menu": "🇺🇿 Uzbekistan or 🌍 Other countries:",
+        "uz_regions": "🇺🇿 Select a region:",
+        "world_countries": "🌍 Select a country:",
+        "again": "🔁 Would you like to check another location?",
+        "source": "Source: Open-Meteo (open-meteo.com)",
+    },
+}
+
+# ====== MA’LUMOTLAR ======
+REGIONS = [
+    "Toshkent", "Samarqand", "Buxoro", "Namangan",
+    "Farg‘ona", "Andijon", "Navoiy", "Jizzax",
+    "Sirdaryo", "Qashqadaryo", "Surxondaryo", "Xorazm"
+]
+
+COUNTRIES = [
+    "Dubai", "Moscow", "New York", "London", "Paris",
+    "Tokyo", "Delhi", "Berlin", "Istanbul", "Seoul", "Rome", "Beijing"
+]
+
+# ====== FORMAT FUNKSIYA ======
+def format_weather(city, data, lang="uz"):
+    current = data["current_weather"]
+    daily = data["daily"]
+
     text = [f"📍 <b>{city}</b>\n"]
-    text.append(f"🌡️ Hozir: {current['main']['temp']:.1f}°C, {current['weather'][0]['description']}")
-    text.append(f"💧 Namlik: {current['main']['humidity']}%\n")
+    text.append(f"{weather_emoji(current['weathercode'])} <b>{current['temperature']}°C</b>\n")
 
-    if today:
-        text.append(f"📅 <b>Bugun</b>: o‘rtacha {today['avg']:.1f}°C (min {today['min']:.1f}°, max {today['max']:.1f}°)")
-        text.append(f"  ☁️ {today['desc']}\n")
-    if tomorrow:
-        text.append(f"📅 <b>Ertaga</b>: o‘rtacha {tomorrow['avg']:.1f}°C (min {tomorrow['min']:.1f}°, max {tomorrow['max']:.1f}°)")
-        text.append(f"  ☁️ {tomorrow['desc']}\n")
+    for i in range(3):
+        date = datetime.fromisoformat(daily["time"][i]).strftime("%d-%m")
+        text.append(
+            f"{weather_emoji(daily['weathercode'][i])} {date} — "
+            f"min: {daily['temperature_2m_min'][i]:.1f}°, "
+            f"max: {daily['temperature_2m_max'][i]:.1f}°"
+        )
 
-    text.append("\n✅ Manba: OpenWeather PRO API")
+    text.append(f"\n✅ {LANG[lang]['source']}")
     return "\n".join(text)
 
 # ====== HANDLERLAR ======
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Salom! 👋 Men OpenWeather PRO API asosida ishlaydigan ob-havo botman.\n\n"
-        "Shunchaki shahar nomini yuboring — masalan: <b>Tashkent</b> yoki /weather Tashkent",
-        parse_mode="HTML"
-    )
+    keyboard = [
+        [
+            InlineKeyboardButton("🇺🇿 O'zbekcha", callback_data="lang_uz"),
+            InlineKeyboardButton("🇷🇺 Русский", callback_data="lang_ru"),
+            InlineKeyboardButton("🇬🇧 English", callback_data="lang_en"),
+        ]
+    ]
+    await update.message.reply_text(LANG["uz"]["choose_lang"], reply_markup=InlineKeyboardMarkup(keyboard))
 
-async def weather(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.args:
-        city = " ".join(context.args)
-    else:
-        await update.message.reply_text("Iltimos, shahar nomini kiriting. Misol: /weather Samarkand")
+async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+
+    # Til tanlandi
+    if data.startswith("lang_"):
+        lang = data.split("_")[1]
+        context.user_data["lang"] = lang
+        keyboard = [
+            [
+                InlineKeyboardButton("🇺🇿 O‘zbekiston", callback_data="uz_regions"),
+                InlineKeyboardButton("🌍 Boshqa davlatlar", callback_data="world_countries"),
+            ]
+        ]
+        await query.edit_message_text(LANG[lang]["menu"], reply_markup=InlineKeyboardMarkup(keyboard))
         return
-    await send_weather(update, city)
 
-async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    city = update.message.text.strip()
-    await send_weather(update, city)
+    # Viloyatlar
+    if data == "uz_regions":
+        lang = context.user_data.get("lang", "uz")
+        keyboard = [
+            [InlineKeyboardButton(region, callback_data=region)] for region in REGIONS
+        ]
+        await query.edit_message_text(LANG[lang]["uz_regions"], reply_markup=InlineKeyboardMarkup(keyboard))
+        return
 
-async def send_weather(update: Update, city):
-    try:
-        lat, lon, city_name = get_coordinates(city)
-        current = get_current_weather(lat, lon)
-        forecast = get_hourly_forecast(lat, lon)
-        tz_offset = current.get("timezone", 0)
+    # Davlatlar
+    if data == "world_countries":
+        lang = context.user_data.get("lang", "uz")
+        keyboard = [
+            [InlineKeyboardButton(country, callback_data=country)] for country in COUNTRIES
+        ]
+        await query.edit_message_text(LANG[lang]["world_countries"], reply_markup=InlineKeyboardMarkup(keyboard))
+        return
 
-        today = (datetime.now(timezone.utc) + timedelta(seconds=tz_offset)).date()
-        tomorrow = today + timedelta(days=1)
+    # Joy tanlandi
+    if data in REGIONS + COUNTRIES:
+        lang = context.user_data.get("lang", "uz")
+        await query.edit_message_text(f"🔎 {data} uchun ob-havo olinmoqda...")
+        try:
+            lat, lon, city_name = get_coordinates(data)
+            weather_data = get_weather_data(lat, lon)
+            msg = format_weather(city_name, weather_data, lang)
 
-        today_summary = summarize_daily(forecast, tz_offset, today)
-        tomorrow_summary = summarize_daily(forecast, tz_offset, tomorrow)
-
-        msg = format_weather(city_name, current, today_summary, tomorrow_summary)
-        await update.message.reply_html(msg)
-
-    except Exception as e:
-        await update.message.reply_text(f"❌ Xato: {e}")
+            # Natijadan keyin menyu qaytadi
+            keyboard = [
+                [
+                    InlineKeyboardButton("🇺🇿 O‘zbekiston", callback_data="uz_regions"),
+                    InlineKeyboardButton("🌍 Boshqa davlatlar", callback_data="world_countries"),
+                ]
+            ]
+            await query.edit_message_text(
+                msg + f"\n\n{LANG[lang]['again']}",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        except Exception as e:
+            await query.edit_message_text(f"❌ Xato: {e}")
 
 # ====== MAIN ======
-
 def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("weather", weather))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
-
+    app.add_handler(CallbackQueryHandler(handle_buttons))
     print("🤖 Bot ishga tushdi...")
     app.run_polling()
 
