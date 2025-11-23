@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 import os
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -10,7 +10,6 @@ from telegram.ext import (
     CallbackQueryHandler,
     ContextTypes,
 )
-import pytz
 
 # ====== ENV LOAD ======
 load_dotenv()
@@ -71,6 +70,11 @@ LANG = {
         "world_countries": "🌍 Qaysi davlatni tanlaysiz?",
         "again": "🔁 Yana qaysi joyni ob-havosini ko‘rmoqchisiz?",
         "source": "Manba: Open-Meteo (open-meteo.com)",
+        "clothing": {
+            "cold": "🧥 Havo sovuq, issiq kiyim kiying!",
+            "mild": "🧶 Engil kiyim kiying, havo mo‘tadil ☁️",
+            "warm": "👕 Havo iliq, yengil kiyim kifoya 🌞"
+        }
     },
     "ru": {
         "choose_lang": "🌐 Выберите язык:",
@@ -79,6 +83,11 @@ LANG = {
         "world_countries": "🌍 Выберите страну:",
         "again": "🔁 Хотите посмотреть другой город?",
         "source": "Источник: Open-Meteo",
+        "clothing": {
+            "cold": "🧥 На улице холодно, одевайтесь тепло!",
+            "mild": "🧶 Умеренная погода, наденьте легкую одежду ☁️",
+            "warm": "👕 Тепло, достаточно легкой одежды 🌞"
+        }
     },
     "en": {
         "choose_lang": "🌐 Choose your language:",
@@ -87,6 +96,11 @@ LANG = {
         "world_countries": "🌍 Select a country:",
         "again": "🔁 Would you like to check another location?",
         "source": "Source: Open-Meteo (open-meteo.com)",
+        "clothing": {
+            "cold": "🧥 It's cold outside, wear warm clothes!",
+            "mild": "🧶 Mild weather, wear light clothes ☁️",
+            "warm": "👕 Warm day, light clothes are enough 🌞"
+        }
     },
 }
 
@@ -107,8 +121,17 @@ def format_weather(city, data, lang="uz"):
     current = data["current_weather"]
     daily = data["daily"]
 
+    temp = current["temperature"]
+    if temp <= 10:
+        clothing_text = LANG[lang]["clothing"]["cold"]
+    elif 10 < temp < 20:
+        clothing_text = LANG[lang]["clothing"]["mild"]
+    else:
+        clothing_text = LANG[lang]["clothing"]["warm"]
+
     text = [f"📍 <b>{city}</b>\n"]
-    text.append(f"{weather_emoji(current['weathercode'])} <b>{current['temperature']}°C</b>\n")
+    text.append(f"{weather_emoji(current['weathercode'])} <b>{temp}°C</b>\n")
+    text.append(clothing_text + "\n")
 
     for i in range(3):
         date = datetime.fromisoformat(daily["time"][i]).strftime("%d-%m")
@@ -130,7 +153,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("🇬🇧 English", callback_data="lang_en"),
         ]
     ]
-    await update.message.reply_text(LANG["uz"]["choose_lang"], reply_markup=InlineKeyboardMarkup(keyboard))
+    await update.message.reply_text("🌐 Tilni tanlang:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
